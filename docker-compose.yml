@@ -1,0 +1,14 @@
+services:
+  postgis:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: hometown_gp
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: dev
+    ports:
+      # Host port 5433 (not 5432) to avoid clashing with any other local Postgres.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:

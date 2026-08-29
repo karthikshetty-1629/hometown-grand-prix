@@ -1,0 +1,30 @@
+# OS
+.DS_Store
+
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Raw map data (large, re-downloadable, not source)
+data-pipeline/raw-data/*
+!data-pipeline/raw-data/.gitkeep
+
+# Local generated storage (chunks + ghost runs + copied world data + live traffic cache)
+server/storage-data/chunks/*
+server/storage-data/ghosts/*
+server/storage-data/world/*
+server/storage-data/live/*
+!server/storage-data/chunks/.gitkeep
+!server/storage-data/ghosts/.gitkeep
+!server/storage-data/world/.gitkeep
+!server/storage-data/live/.gitkeep
+
+# Env / secrets (none required yet, but reserved)
+.env
+.env.local
+
+# Build output
+client/dist/

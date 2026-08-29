@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Hometown Grand Prix</title>
+    <style>
+      :root {
+        --bg: #0b0c10;
+        --panel-bg: rgba(20, 22, 29, 0.78);
+        --panel-border: rgba(255, 255, 255, 0.08);
+        --accent: #4f8cff;
+        --accent-2: #7c5cff;
+        --text: #eef1f6;
+        --text-dim: #9aa3b2;
+        --start: #2ecc71;
+        --end: #ff5c5c;
+      }
+
+      html, body { margin: 0; padding: 0; overflow: hidden; height: 100%; background: #111; }
+      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+
+      #renderCanvas { width: 100%; height: 100%; touch-action: none; display: block; }
+      #hud {
+        position: absolute; top: 12px; left: 12px; color: #fff;
+        font-family: sans-serif; font-size: 14px; text-shadow: 0 1px 2px #000;
+        pointer-events: none;
+      }
+      #osm-attribution {
+        position: absolute; bottom: 8px; right: 10px; color: rgba(255, 255, 255, 0.75);
+        font-family: sans-serif; font-size: 11px; text-shadow: 0 1px 2px #000;
+        pointer-events: auto;
+      }
+      #osm-attribution a { color: inherit; }
+
+      #hud-timer {
+        margin-top: 4px; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums;
+        text-shadow: 0 1px 3px #000;
+      }
+
+      /* ---- speedometer + current road's speed limit ---- */
+      #hud-speed-row {
+        margin: 6px 0 8px; display: flex; align-items: baseline; gap: 10px;
+        font-variant-numeric: tabular-nums;
+      }
+      #hud-speed { font-size: 26px; font-weight: 800; transition: color 0.15s ease; }
+      #hud-speed-unit { font-size: 12px; color: var(--text-dim); }
+      #hud-speed-limit {
+        font-size: 13px; color: var(--text-dim); background: rgba(255, 255, 255, 0.08);
+        padding: 2px 8px; border-radius: 10px; border: 1px solid rgba(255, 255, 255, 0.12);
+      }
+      #hud-speed.over-limit { color: var(--end); }
+      #hud-speed-limit.over-limit { color: var(--end); border-color: rgba(255, 92, 92, 0.5); background: rgba(255, 92, 92, 0.12); }
+
+      /* ---- navigation billboard: current street + upcoming intersection ---- */
+      #nav-billboard {
+        position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+        background: var(--panel-bg); backdrop-filter: blur(14px);
+        border: 1px solid var(--panel-border); border-radius: 12px;
+        padding: 10px 20px; text-align: center; color: var(--text);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); pointer-events: none;
+      }
+      #nav-current { font-size: 17px; font-weight: 700; white-space: nowrap; }
+      #nav-ahead { font-size: 12px; color: var(--text-dim); margin-top: 2px; white-space: nowrap; }
+
+      /* ---- finish overlay ---- */
+      #finish-overlay {
+        position: absolute; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center;
+        background: rgba(11, 12, 16, 0.55); backdrop-filter: blur(3px);
+      }
+      #finish-card {
+        width: 340px; max-width: 90%; background: var(--panel-bg); backdrop-filter: blur(14px);
+        border: 1px solid var(--panel-border); border-radius: 16px; padding: 26px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); color: var(--text); text-align: center;
+      }
+      #finish-card h2 { margin: 0 0 6px; font-size: 20px; }
+      #finish-time {
+        margin: 0 0 18px; font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums;
+        background: linear-gradient(135deg, #fff, #b9c6ff); -webkit-background-clip: text; background-clip: text; color: transparent;
+      }
+      #finish-save-row { display: flex; gap: 8px; }
+      #finish-name-input {
+        flex: 1; font-size: 14px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--panel-border);
+        background: rgba(255, 255, 255, 0.04); color: var(--text); outline: none;
+      }
+      #finish-name-input:focus { border-color: var(--accent); }
+      #finish-save-btn, #finish-play-again {
+        font-size: 13px; font-weight: 600; padding: 10px 14px; border: none; border-radius: 8px;
+        cursor: pointer; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff;
+      }
+      #finish-save-btn:disabled { opacity: 0.6; cursor: wait; }
+      #finish-status { min-height: 16px; font-size: 12px; color: var(--text-dim); margin: 8px 0 0; }
+      #finish-leaderboard { margin-top: 18px; text-align: left; }
+      #finish-leaderboard h3 { margin: 0 0 8px; font-size: 14px; color: var(--text-dim); font-weight: 600; }
+      #finish-leaderboard-list { margin: 0 0 16px; padding-left: 20px; font-size: 14px; line-height: 1.7; }
+      #finish-play-again { width: 100%; }
+
+      /* ---- AI race steward overlay ---- */
+      #steward-overlay {
+        position: absolute; top: 20px; right: 20px; z-index: 20; display: flex;
+      }
+      #steward-card {
+        width: 300px; background: var(--panel-bg); backdrop-filter: blur(14px);
+        border: 1px solid var(--panel-border); border-left: 4px solid var(--accent);
+        border-radius: 12px; padding: 16px 18px; color: var(--text);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+      }
+      #steward-header {
+        font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+        color: var(--text-dim); margin-bottom: 6px;
+      }
+      #steward-alert { font-size: 15px; font-weight: 700; margin-bottom: 6px; }
+      #steward-instruction { font-size: 13px; color: var(--text-dim); margin-bottom: 6px; }
+      #steward-reason { font-size: 12px; color: var(--text-dim); font-style: italic; margin-bottom: 10px; }
+      #steward-buttons { display: flex; gap: 8px; }
+      #steward-buttons button {
+        flex: 1; font-size: 12px; font-weight: 600; padding: 8px; border: none;
+        border-radius: 6px; cursor: pointer;
+      }
+      #steward-comply { background: var(--start); color: #06210f; }
+      #steward-ignore { background: var(--end); color: #2a0505; }
+
+      /* ---- touch controls (phones/tablets only) ---- */
+      #touch-controls {
+        position: absolute; inset: 0; pointer-events: none; z-index: 5;
+      }
+      #touch-controls .touch-btn {
+        pointer-events: auto; -webkit-tap-highlight-color: transparent; user-select: none;
+        background: rgba(20, 22, 29, 0.55); border: 1px solid rgba(255, 255, 255, 0.18);
+        color: #fff; backdrop-filter: blur(6px);
+      }
+      #touch-controls .touch-btn:active { background: rgba(79, 140, 255, 0.55); }
+      #touch-steer {
+        position: absolute; left: 18px; bottom: 24px; display: flex; gap: 14px;
+      }
+      #touch-steer .touch-btn {
+        width: 68px; height: 68px; border-radius: 16px; font-size: 26px;
+      }
+      #touch-pedals {
+        position: absolute; right: 18px; bottom: 24px; display: flex; flex-direction: column; gap: 14px;
+      }
+      .touch-btn-round { width: 74px; height: 74px; border-radius: 50%; font-size: 26px; }
+      .touch-btn-small {
+        position: absolute; top: 12px; right: 12px; width: 44px; height: 44px;
+        border-radius: 50%; font-size: 18px;
+      }
+
+      /* ---- route picker screen ---- */
+
+      #picker {
+        position: absolute; inset: 0; display: flex; flex-direction: column;
+        gap: 18px; padding: 28px 32px; box-sizing: border-box;
+        color: var(--text); background-color: var(--bg);
+        background-image:
+          linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+        background-size: 32px 32px;
+      }
+
+      #picker-header { text-align: center; animation: fadeIn 0.5s ease both; }
+      #picker-header h1 {
+        margin: 0; font-size: 26px; font-weight: 700; letter-spacing: 0.3px;
+        background: linear-gradient(135deg, #fff, #b9c6ff);
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+      }
+      #picker-header p { margin: 6px 0 0; font-size: 14px; color: var(--text-dim); }
+
+      #picker-map-frame {
+        flex: 1; position: relative; border-radius: 20px; overflow: hidden;
+        border: 1px solid var(--panel-border); background: #12141a;
+        box-shadow: 0 25px 70px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+      }
+      #picker-canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
+
+      #picker-loading {
+        position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+        justify-content: center; gap: 14px; background: rgba(18, 20, 26, 0.92);
+        color: var(--text-dim); font-size: 14px; transition: opacity 0.3s ease;
+      }
+      #picker-loading.hidden { opacity: 0; pointer-events: none; }
+      #picker-loading.error .spinner { display: none; }
+      #picker-loading.error span { color: var(--end); max-width: 320px; text-align: center; }
+      .spinner {
+        width: 32px; height: 32px; border-radius: 50%;
+        border: 3px solid rgba(255, 255, 255, 0.15); border-top-color: var(--accent);
+        animation: spin 0.8s linear infinite;
+      }
+
+      #picker-hud {
+        position: absolute; top: 20px; left: 20px; width: 280px;
+        background: var(--panel-bg); backdrop-filter: blur(14px);
+        border: 1px solid var(--panel-border); border-radius: 14px; padding: 18px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+        display: flex; flex-direction: column; gap: 14px;
+        animation: fadeIn 0.5s ease 0.1s both;
+      }
+
+      #picker-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+      #picker-steps li {
+        display: flex; align-items: center; gap: 10px; font-size: 13px;
+        color: var(--text-dim); transition: color 0.25s ease;
+      }
+      #picker-steps li.active { color: var(--text); font-weight: 600; }
+      #picker-steps li.done { color: var(--start); }
+      .step-num {
+        width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 11px; border: 1px solid currentColor; transition: all 0.25s ease;
+      }
+      #picker-steps li.active .step-num {
+        background: var(--accent); border-color: var(--accent); color: #fff;
+        box-shadow: 0 0 0 4px rgba(79, 140, 255, 0.18);
+      }
+      #picker-steps li.done .step-num { background: var(--start); border-color: var(--start); color: #0b0c10; }
+
+      #picker-status { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text-dim); min-height: 34px; transition: color 0.2s ease; }
+      #picker-status.error { color: var(--end); }
+
+      #picker-legend { display: flex; gap: 16px; font-size: 12px; color: var(--text-dim); }
+      #picker-legend span { display: flex; align-items: center; gap: 6px; }
+      #picker-legend .dot { width: 10px; height: 10px; border-radius: 50%; box-shadow: 0 0 6px currentColor; }
+
+      #picker-buttons { display: flex; gap: 10px; }
+      #picker-buttons button {
+        font-size: 13px; font-weight: 600; padding: 10px 14px; border: none;
+        border-radius: 8px; cursor: pointer; transition: all 0.2s ease;
+      }
+      #picker-generate {
+        flex: 1; background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        color: #fff; box-shadow: 0 6px 18px rgba(79, 140, 255, 0.35);
+      }
+      #picker-generate:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 22px rgba(79, 140, 255, 0.45); }
+      #picker-generate:disabled { background: rgba(255, 255, 255, 0.08); color: var(--text-dim); box-shadow: none; cursor: not-allowed; }
+      #picker-generate.loading { opacity: 0.7; cursor: wait; }
+      #picker-reset {
+        background: transparent; color: var(--text-dim); border: 1px solid var(--panel-border);
+      }
+      #picker-reset:hover { color: #fff; border-color: rgba(255, 255, 255, 0.25); }
+
+      #picker-attribution {
+        position: absolute; bottom: 8px; right: 12px; color: rgba(255, 255, 255, 0.55);
+        font-size: 11px;
+      }
+      #picker-attribution a { color: inherit; }
+
+      /* ---- server-setup screen (native app, first launch) ---- */
+      #server-setup-card {
+        width: 340px; max-width: 90%; background: var(--panel-bg); backdrop-filter: blur(14px);
+        border: 1px solid var(--panel-border); border-radius: 14px; padding: 22px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35); display: flex; flex-direction: column; gap: 12px;
+      }
+      #server-setup-help { margin: 0; font-size: 13px; line-height: 1.5; color: var(--text-dim); }
+      #server-setup-help code { color: var(--text); }
+      #server-setup-input {
+        font-size: 14px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--panel-border);
+        background: rgba(255, 255, 255, 0.04); color: var(--text); outline: none;
+      }
+      #server-setup-input:focus { border-color: var(--accent); }
+      #server-setup-connect {
+        font-size: 13px; font-weight: 600; padding: 10px 14px; border: none; border-radius: 8px;
+        cursor: pointer; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff;
+      }
+      #server-setup-connect:disabled { opacity: 0.6; cursor: wait; }
+      #server-setup-status { margin: 0; font-size: 12px; min-height: 16px; color: var(--text-dim); }
+      #server-setup-status.error { color: var(--end); }
+
+      @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <div id="picker"></div>
+
+    <canvas id="renderCanvas" style="display: none"></canvas>
+    <div id="hud" style="display: none">
+      <div id="status">Loading track...</div>
+      <div id="hud-timer">0:00.00</div>
+      <div id="hud-speed-row">
+        <span id="hud-speed"><span id="hud-speed-value">0</span><span id="hud-speed-unit"> km/h</span></span>
+        <span id="hud-speed-limit">limit —</span>
+      </div>
+      <div id="hud-hint-keyboard">&uarr; / W accelerate &nbsp; &darr; / S brake &amp; reverse &nbsp; &larr;&rarr; / A D steer &nbsp; V switch view</div>
+    </div>
+    <div id="osm-attribution" style="display: none">
+      Map data &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors, ODbL
+    </div>
+    <div id="touch-controls" style="display: none"></div>
+    <div id="finish-overlay" style="display: none"></div>
+    <div id="steward-overlay" style="display: none"></div>
+    <div id="nav-billboard" style="display: none">
+      <div id="nav-current">On —</div>
+      <div id="nav-ahead"></div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

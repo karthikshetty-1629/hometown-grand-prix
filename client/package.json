@@ -1,0 +1,24 @@
+{
+  "name": "hometown-grand-prix-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Playable web game for Hometown Grand Prix, built with Babylon.js.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^7.0.0",
+    "@babylonjs/loaders": "^7.54.3",
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/ios": "^8.5.0",
+    "earcut": "^3.2.3"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}

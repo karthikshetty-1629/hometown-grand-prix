@@ -1,0 +1,16 @@
+{
+  "name": "hometown-grand-prix-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local API server for Hometown Grand Prix — serves track chunks, stores ghost runs.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^4.19.2"
+  }
+}
