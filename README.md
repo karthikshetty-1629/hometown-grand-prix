@@ -8,6 +8,9 @@ traffic data — built for the **Agent Harness Hackathon** (WeMakeDevs, Aug 29 2
 > traffic scraping, free-roam driving on the entire real road network, and a judge-facing
 > multi-agent dashboard.
 
+**[View the judge-facing project overview →](https://claude.ai/code/artifact/7102bfd3-09f8-4eba-bea9-e6439f710735)**
+— a one-page visual summary of the 4 agents, what's live, and how each prize track is targeted.
+
 <!--
   Add real screenshots/GIFs here once you have them, e.g.:
   ![Gameplay with steward overlay](docs/screenshots/steward-overlay.png)
@@ -116,6 +119,15 @@ hometown-grand-prix/
    predictive speed-limit readout in the HUD.
 6. **TrueForge judge dashboard** — 4 subagents configured with connectors (`exa`,
    `parallel-web`) as a second screen for the live demo.
+
+## Qodo Code Review Evidence
+
+Qodo is connected to this repository with automatic PR review enabled (no manual trigger per
+PR). Representative merged PR:
+[#1 — Rewrite README as full hackathon overview](https://github.com/karthikshetty-1629/hometown-grand-prix/pull/1).
+Qodo reviewed the diff automatically and reported 0 bugs, 0 rule violations, and 0 requirement
+gaps, along with its own auto-generated architecture summary of the change; the PR was merged
+as-is since no fixes were needed.
 
 ## Prerequisites (install these once)
 
