@@ -26,7 +26,7 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'start and end must be different points' });
   }
 
-  const { nodesById, adjacency } = await loadWorldData();
+  const { nodesById, adjacency, physicalAdjacency } = await loadWorldData();
   if (!nodesById.has(startNodeId) || !nodesById.has(endNodeId)) {
     return res.status(400).json({ error: 'unknown node id' });
   }
@@ -57,7 +57,7 @@ router.post('/', async (req, res) => {
   const finishDir = normalize(fx - f2x, fz - f2z);
 
   const startEdge = (adjacency.get(startNodeId) || []).find((n) => n.to === pathIds[1]);
-  const finishEdge = (adjacency.get(endNodeId) || []).find((n) => n.to === pathIds[pathIds.length - 2]);
+  const finishEdge = (physicalAdjacency.get(endNodeId) || []).find((n) => n.to === pathIds[pathIds.length - 2]);
   const startWidth = roadWidthAndLanes(startEdge?.highway, startEdge?.lanes).width;
   const finishWidth = roadWidthAndLanes(finishEdge?.highway, finishEdge?.lanes).width;
 
@@ -65,11 +65,17 @@ router.post('/', async (req, res) => {
   const chunk = {
     chunk_id: chunkId,
     origin,
-    start: { x: round2(sx), z: round2(sz), dirX: startDir.x, dirZ: startDir.z, width_m: round2(startWidth) },
+    start: { x: round2(sx + startDir.z * Math.min(startWidth / 4, 2.3)), z: round2(sz - startDir.x * Math.min(startWidth / 4, 2.3)), dirX: startDir.x, dirZ: startDir.z, width_m: round2(startWidth) },
     checkpoints: [
       { x: round2(fx), z: round2(fz), index: 0, dirX: finishDir.x, dirZ: finishDir.z, width_m: round2(finishWidth) },
     ],
     reference_length_m: Math.round(lengthM),
+    navigation_path: pathIds.map((id, i) => {
+      const n = nodesById.get(id);
+      const [x,z] = latlonToLocalMeters(n.lat,n.lon,origin.lat,origin.lon);
+      const edge = (adjacency.get(id)||[]).find(e=>e.to===pathIds[i+1]);
+      return {x:round2(x),z:round2(z),name:edge?.name||''};
+    }),
   };
 
   await storage.saveFile('chunks', `${chunkId}.json`, JSON.stringify(chunk));

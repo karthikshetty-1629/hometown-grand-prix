@@ -7,7 +7,7 @@
 // pull the camera closer if a wall is between it and the car, so buildings can no longer
 // clip into (or block) the view.
 
-import { UniversalCamera, Vector3, Ray } from '@babylonjs/core';
+import { UniversalCamera, Vector3 } from '@babylonjs/core';
 
 const VIEW_MODES = ['chase', 'drone', 'driver'];
 
@@ -25,10 +25,12 @@ const OBSTRUCTION_MARGIN_M = 1.2; // how far in front of a hit wall the camera s
 const MIN_CAMERA_DISTANCE_M = 2;
 
 export class CameraRig {
-  constructor(scene) {
+  constructor(scene, streetSpace) {
+    this.streetSpace = streetSpace;
     this.scene = scene;
     this.camera = new UniversalCamera('gameCam', new Vector3(0, 5, -10), scene);
     this.camera.minZ = 0.1;
+    this.camera.maxZ = 1400;
     this.modeIndex = 0;
     this._smoothedPosition = null;
     this._smoothedTarget = null;
@@ -97,11 +99,12 @@ export class CameraRig {
     if (fullDistance < 1e-3) return desiredPosition;
     const dir = offset.scale(1 / fullDistance);
 
-    const ray = new Ray(target, dir, fullDistance);
-    const hit = this.scene.pickWithRay(ray, isBuildingMesh);
-    if (hit && hit.hit && hit.distance < fullDistance) {
-      const clamped = Math.max(MIN_CAMERA_DISTANCE_M, hit.distance - OBSTRUCTION_MARGIN_M);
-      return target.add(dir.scale(clamped));
+    // Spatial footprint lookup avoids raycasting every triangle in the city.
+    for (let d = 1; d < fullDistance; d += .7) {
+      const p = target.add(dir.scale(d));
+      const blocked = this.streetSpace?.nearby(p, this.streetSpace.buildingCells).some(b =>
+        (b.height_m || 12) > p.y && this.streetSpace.inBuilding(p, .4));
+      if (blocked) return target.add(dir.scale(Math.max(MIN_CAMERA_DISTANCE_M, d - OBSTRUCTION_MARGIN_M)));
     }
     return desiredPosition;
   }

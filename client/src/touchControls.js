@@ -6,7 +6,7 @@
 // duplicated game logic.
 
 export function shouldShowTouchControls() {
-  return window.matchMedia('(pointer: coarse)').matches;
+  return window.matchMedia('(pointer: coarse), (max-width: 720px)').matches;
 }
 
 export function mountTouchControls(container, car) {

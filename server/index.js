@@ -17,6 +17,7 @@ const app = express();
 app.use(cors()); // client and server are always different origins (dev ports, or app + cloud host)
 app.use(express.json());
 
+app.use('/api/rooms', require('./routes/rooms'));
 app.use('/api/tracks', tracksRouter);
 app.use('/api/ghosts', ghostsRouter);
 app.use('/api/world', worldRouter);

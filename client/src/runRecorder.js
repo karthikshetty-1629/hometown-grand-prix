@@ -32,6 +32,8 @@ export class RunRecorder {
   }
 
   stop() {
+    const last = this.samples[this.samples.length - 1];
+    if (last) this.samples.push({ ...last, t: Math.round(this.elapsed * 100) / 100 });
     this.recording = false;
   }
 

@@ -1,8 +1,13 @@
-import { Engine, Scene, HemisphericLight, DirectionalLight, Vector3, Color3, Color4 } from '@babylonjs/core';
+import {routeInstruction} from './routeGuidance.js';
+import { loadVehicleAssets } from './vehicleAssets.js';
+import { Engine, Scene, HemisphericLight, DirectionalLight, Vector3, Color3, Color4, CubeTexture, ShadowGenerator } from '@babylonjs/core';
 import { buildScene } from './sceneBuilder.js';
 import { CarController } from './carController.js';
 import { RunRecorder } from './runRecorder.js';
 import { GhostPlayer } from './ghostPlayer.js';
+import { CitySimulation } from './citySimulation.js';
+import { Multiplayer } from './multiplayer.js';
+import { driveSession } from './routePicker.js';
 import { showRoutePicker } from './routePicker.js';
 import { getApiBaseUrl, needsServerSetup } from './config.js';
 import { showServerSetup } from './serverSetup.js';
@@ -10,17 +15,15 @@ import { shouldShowTouchControls, mountTouchControls } from './touchControls.js'
 import { AudioManager } from './audioManager.js';
 import { showFinishPanel, formatTime } from './finishPanel.js';
 import { findNearestRoadSegment } from './roadLookup.js';
-import { reportToSteward } from './steward.js';
 import { buildNavigationIndex, findNavigationInfo } from './navigationHud.js';
 
 const CHECKPOINT_RADIUS_M = 8; // wider than the old rail-guided value — free driving means
 // the car is realistically off the exact road centerline sometimes
 const COLLISION_SOUND_COOLDOWN_S = 0.4; // scraping a wall spans many frames — don't spam the thud
 const SPEEDING_THRESHOLD_MULTIPLIER = 1.1; // 10% over the (heuristic) road-class speed limit
-const OFFROAD_MARGIN_M = 3; // beyond the road's half-width before counting as "off road" —
-// avoids flagging a car that's merely near the curb/edge of its own lane
-const STEWARD_COOLDOWN_S = 10; // per event type, per project instruction
 
+const loading=document.getElementById('city-loading');
+async function loadingStage(percent,label){loading.hidden=false;loading.querySelector('progress').value=percent;loading.querySelector('[role=status]').textContent=label;await new Promise(r=>setTimeout(r,30));}
 const statusEl = document.getElementById('status');
 
 async function main() {
@@ -35,19 +38,24 @@ async function main() {
   const API_BASE_URL = getApiBaseUrl();
 
   const trackId = await showRoutePicker(API_BASE_URL, pickerEl);
+  await loadingStage(12,'Finding your route through San Jose…');
+  const chunk = await fetchWorldAndTrack(API_BASE_URL, trackId);
   pickerEl.style.display = 'none';
   document.getElementById('renderCanvas').style.display = '';
   document.getElementById('hud').style.display = '';
   document.getElementById('osm-attribution').style.display = '';
   document.getElementById('nav-billboard').style.display = '';
 
-  const chunk = await fetchWorldAndTrack(API_BASE_URL, trackId);
   statusEl.textContent = `Loading ${chunk.chunk_id}…`;
 
   const canvas = document.getElementById('renderCanvas');
-  const engine = new Engine(canvas, true);
+  const engine = new Engine(canvas, true, {powerPreference:'high-performance'});
+  engine.setHardwareScalingLevel(1);
   const scene = new Scene(engine);
-  scene.clearColor = new Color4(0.53, 0.75, 0.9, 1);
+  scene.clearColor = new Color4(.72,.8,.81,1);
+  scene.fogMode = Scene.FOGMODE_EXP2;
+  scene.fogDensity = .0006;
+  scene.fogColor = new Color3(.72,.8,.81);
 
   // HemisphericLight alone defaults groundColor to black, so any surface facing away
   // from straight up (i.e. every vertical building wall) renders toward pure black — the
@@ -60,11 +68,22 @@ async function main() {
 
   const sunLight = new DirectionalLight('sunLight', new Vector3(-0.5, -1, -0.3), scene);
   sunLight.intensity = 0.6;
-  await buildScene(scene, chunk);
-  statusEl.textContent = `Track: ${chunk.chunk_id} — drive the route!`;
+  scene.environmentTexture = CubeTexture.CreateFromPrefilteredData('/models/environment.env', scene);
+  scene.environmentIntensity = .65;
+  scene.imageProcessingConfiguration.exposure = 1.15;
+  scene.imageProcessingConfiguration.contrast = 1.12;
+  await loadingStage(25,'Getting your car ready…');
+  await loadVehicleAssets(scene);
+  await buildScene(scene, chunk, loadingStage);
+  statusEl.textContent = driveSession.mode === 'drive' ? 'SAN JOSE · FREE DRIVE' : 'SAN JOSE · RACE TO YOUR FINISH';
 
-  const car = new CarController(scene, canvas, chunk.start, chunk.buildings);
+  const car = new CarController(scene, canvas, chunk.start, chunk.buildings, chunk.streetSpace);
+  const shadows = new ShadowGenerator(512, sunLight);
+  shadows.usePercentageCloserFiltering = true;
+  shadows.blurKernel = 16;
+  for (const mesh of car.mesh.getChildMeshes()) shadows.addShadowCaster(mesh, false);
   const navIndex = buildNavigationIndex(chunk);
+  if(driveSession.mode === 'drive' && !driveSession.hasDestination) chunk.navigation_path = [];
 
   if (shouldShowTouchControls()) {
     const touchEl = document.getElementById('touch-controls');
@@ -75,7 +94,9 @@ async function main() {
 
   const recorder = new RunRecorder(API_BASE_URL, trackId);
   const ghost = new GhostPlayer(scene);
-  await ghost.loadGhost(API_BASE_URL, trackId);
+  if (driveSession.mode === 'race' && !driveSession.room) await ghost.loadGhost(API_BASE_URL, trackId);
+  const simulation = new CitySimulation(scene, chunk, car, recorder);
+  const multiplayer = new Multiplayer(API_BASE_URL, scene);
 
   const audio = new AudioManager();
   const resumeAudioOnce = () => {
@@ -88,53 +109,70 @@ async function main() {
 
   const raceState = { nextCheckpointIndex: 0, finished: false };
   let lastCollisionSoundAt = -Infinity;
-  const lastStewardCallAt = { speeding: -Infinity, off_road: -Infinity };
   const hudTimerEl = document.getElementById('hud-timer');
   const hudSpeedEl = document.getElementById('hud-speed');
   const hudSpeedValueEl = document.getElementById('hud-speed-value');
   const hudSpeedLimitEl = document.getElementById('hud-speed-limit');
   const finishEl = document.getElementById('finish-overlay');
-  const stewardEl = document.getElementById('steward-overlay');
   const navEl = document.getElementById('nav-billboard');
 
+  await loadingStage(95,'Warming up the engine…');
+  await scene.whenReadyAsync();
+  loading.hidden=true;
+  let hudTick=0, performanceTick=0, frameCount=0;
   engine.runRenderLoop(() => {
-    const deltaSeconds = engine.getDeltaTime() / 1000;
-    const carState = car.update(deltaSeconds);
+    const deltaSeconds = Math.min(engine.getDeltaTime() / 1000, .1);
+    const carState = car.update(multiplayer.started && !raceState.finished ? deltaSeconds : 0);
+    multiplayer.update(carState);
     audio.updateEngine(carState.speedFraction, car.input.accelerate);
 
-    if (!raceState.finished) {
+    if (!raceState.finished && multiplayer.started) {
       recorder.tick(deltaSeconds, carState);
-      hudTimerEl.textContent = formatTime(recorder.elapsed);
+      hudTick += deltaSeconds;
 
       // Nearest road segment is used both to warn the player of the current speed limit
       // *before* they get flagged, and to feed the steward triggers below — computed once
       // per frame and shared, rather than twice.
-      const nearestRoad =
-        chunk.road_segments && chunk.road_segments.length > 0
-          ? findNearestRoadSegment(chunk.road_segments, carState.x, carState.z)
-          : null;
-      updateSpeedHud(hudSpeedEl, hudSpeedValueEl, hudSpeedLimitEl, carState, nearestRoad);
-      updateNavigationBillboard(navEl, navIndex, carState, car.heading, nearestRoad);
+      const nearestRoad = chunk.streetSpace.nearest(carState);
+      if(hudTick>=.1){
+        hudTick=0;hudTimerEl.textContent=formatTime(recorder.elapsed);
+        updateSpeedHud(hudSpeedEl,hudSpeedValueEl,hudSpeedLimitEl,carState,nearestRoad);
+        if(chunk.navigation_path?.length){
+          const instruction=routeInstruction(chunk.navigation_path,carState,car.heading);
+          navEl.querySelector('#nav-current').textContent=instruction.title;
+          navEl.querySelector('#nav-ahead').textContent=instruction.detail;
+          simulation.nextTurn=instruction.turn;
+        }else updateNavigationBillboard(navEl,navIndex,carState,car.heading,nearestRoad);
+      }
 
       if (carState.collided && recorder.elapsed - lastCollisionSoundAt > COLLISION_SOUND_COOLDOWN_S) {
         audio.playCollision();
         lastCollisionSoundAt = recorder.elapsed;
       }
 
-      const crossedCheckpoint = checkCheckpointProgress(carState, chunk.checkpoints, raceState);
+      simulation.update(deltaSeconds, carState, nearestRoad);
+      const crossedCheckpoint = driveSession.mode === 'race' && !simulation.rules.wanted && checkCheckpointProgress(carState, chunk.checkpoints, raceState);
       if (crossedCheckpoint) audio.playCheckpoint();
       ghost.update(recorder.elapsed);
 
-      checkStewardTriggers(nearestRoad, carState, recorder, lastStewardCallAt, API_BASE_URL, stewardEl);
+
 
       if (raceState.finished) {
         recorder.stop();
         audio.playFinish();
-        showFinishPanel(finishEl, API_BASE_URL, trackId, recorder, recorder.elapsed);
+        if (driveSession.room) multiplayer.finished = recorder.elapsed;
+        else showFinishPanel(finishEl, API_BASE_URL, trackId, recorder, recorder.elapsed);
       }
     }
 
     scene.render();
+    frameCount++;performanceTick+=engine.getDeltaTime();
+    if(performanceTick>2000){
+      const fps=Math.round(frameCount*1000/performanceTick);
+      document.getElementById('performance-readout').textContent=`${fps} FPS`;
+      if(fps<26 && engine.getHardwareScalingLevel()<2)engine.setHardwareScalingLevel(Math.min(2,engine.getHardwareScalingLevel()+.2));
+      frameCount=0;performanceTick=0;
+    }
   });
 
   window.addEventListener('resize', () => engine.resize());
@@ -165,7 +203,7 @@ function checkCheckpointProgress(carState, checkpoints, raceState) {
 // a violation coming and lift off the accelerator instead of only finding out after the AI
 // steward already flagged it.
 function updateSpeedHud(speedEl, speedValueEl, speedLimitEl, carState, nearestRoad) {
-  const speedKmh = Math.round(carState.speedMps * 3.6);
+  const speedKmh = Math.round(carState.speedMps * 2.23694);
   speedValueEl.textContent = String(speedKmh);
 
   if (!nearestRoad) {
@@ -175,8 +213,8 @@ function updateSpeedHud(speedEl, speedValueEl, speedLimitEl, carState, nearestRo
     return;
   }
 
-  const limitKmh = nearestRoad.segment.speed_limit_kmh;
-  speedLimitEl.textContent = `limit ${limitKmh}`;
+  const limitKmh = Math.round(nearestRoad.segment.speed_limit_kmh / 1.609344);
+  speedLimitEl.textContent = `${nearestRoad.segment.speed_source === 'osm' ? 'limit' : 'est.'} ${limitKmh}`;
   const over = speedKmh > limitKmh * SPEEDING_THRESHOLD_MULTIPLIER;
   speedEl.classList.toggle('over-limit', over);
   speedLimitEl.classList.toggle('over-limit', over);
@@ -207,56 +245,26 @@ function updateNavigationBillboard(navEl, navIndex, carState, heading, nearestRo
     .join(' · ');
 }
 
-// Checks the two AI Race Steward triggers (speeding, off-road) against the car's position
-// relative to the nearest real road segment. Each trigger has its own cooldown so speeding
-// down one long straight doesn't spam the steward every frame it stays true.
-function checkStewardTriggers(nearestRoad, carState, recorder, lastStewardCallAt, apiBaseUrl, stewardEl) {
-  if (!nearestRoad) return;
-
-  const speedKmh = carState.speedMps * 3.6;
-  const limitKmh = nearestRoad.segment.speed_limit_kmh;
-  const halfWidth = nearestRoad.segment.width_m / 2;
-  const isOffRoad = nearestRoad.distance > halfWidth + OFFROAD_MARGIN_M;
-
-  if (
-    speedKmh > limitKmh * SPEEDING_THRESHOLD_MULTIPLIER &&
-    recorder.elapsed - lastStewardCallAt.speeding > STEWARD_COOLDOWN_S
-  ) {
-    lastStewardCallAt.speeding = recorder.elapsed;
-    reportToSteward(apiBaseUrl, stewardEl, recorder, 'speeding', {
-      speed_kmh: Math.round(speedKmh),
-      limit_kmh: limitKmh,
-      position: { x: carState.x, z: carState.z },
-    });
-  }
-
-  if (isOffRoad && recorder.elapsed - lastStewardCallAt.off_road > STEWARD_COOLDOWN_S) {
-    lastStewardCallAt.off_road = recorder.elapsed;
-    reportToSteward(apiBaseUrl, stewardEl, recorder, 'off_road', {
-      distance_from_road_m: Math.round(nearestRoad.distance),
-      position: { x: carState.x, z: carState.z },
-    });
-  }
-}
-
 // The whole road network/buildings/footpaths come from /api/world/full (cached server-side,
 // identical for every race), the track-specific start point and finish checkpoint come from
 // /api/tracks/:id, and any live traffic-congestion data (scraped via Bright Data, see
 // data-pipeline/match_traffic_to_roads.js) comes from /api/live/traffic — merged into one
 // object so the rest of the app can treat it as a single chunk, same as before.
 async function fetchWorldAndTrack(apiBaseUrl, trackId) {
-  const [worldResponse, trackResponse, trafficResponse] = await Promise.all([
+  const [worldResponse, trackResponse] = await Promise.all([
     fetch(`${apiBaseUrl}/api/world/full`),
     fetch(`${apiBaseUrl}/api/tracks/${trackId}`),
-    fetch(`${apiBaseUrl}/api/live/traffic`),
   ]);
+  if (!worldResponse.ok || !trackResponse.ok) throw new Error('Could not load this city or route. Please reload and try again.');
   const world = await worldResponse.json();
   const track = await trackResponse.json();
-  const traffic = await trafficResponse.json();
-  return { ...world, ...track, traffic };
+  return { ...world, ...track };
 }
 
 main().catch((err) => {
+  loading.hidden=false;loading.querySelector('[role=status]').textContent=`Could not start: ${err.message}`;loading.querySelector('button').hidden=false;
   statusEl.textContent = `Error: ${err.message}`;
+  const routeStatus = document.getElementById('route-status');
+  if (routeStatus) { routeStatus.textContent = `Could not start: ${err.message}. Reload to retry.`; routeStatus.classList.add('error'); }
   console.error(err);
 });

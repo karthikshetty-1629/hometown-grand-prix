@@ -4,10 +4,9 @@
 // car has crossed a boundary and push it back out along the correct direction — which is
 // what gives the "slide along the wall" feel rather than a hard stop.
 
-const BUILDING_BROAD_PHASE_M = 25; // skip the exact polygon check for anything clearly too far away
 
 export function buildBuildingColliders(buildings) {
-  return buildings.map((b) => ({ points: b.footprint, centroid: centroidOf(b.footprint) }));
+  return buildings.map((b) => ({ points: b.footprint, centroid: centroidOf(b.footprint), minX: Math.min(...b.footprint.map(p => p.x)), maxX: Math.max(...b.footprint.map(p => p.x)), minZ: Math.min(...b.footprint.map(p => p.z)), maxZ: Math.max(...b.footprint.map(p => p.z)) }));
 }
 
 // Returns { x, z, hit }. `radius` is the car's own collision radius, so its body stops at
@@ -18,15 +17,14 @@ export function resolveBuildingCollisions(x, z, radius, colliders) {
   let hit = false;
 
   for (const collider of colliders) {
-    const dCentroidSq = (cx - collider.centroid.x) ** 2 + (cz - collider.centroid.z) ** 2;
-    if (dCentroidSq > BUILDING_BROAD_PHASE_M * BUILDING_BROAD_PHASE_M) continue;
+    if (cx < collider.minX - radius || cx > collider.maxX + radius || cz < collider.minZ - radius || cz > collider.maxZ + radius) continue;
 
     const { dist, bx, bz } = nearestOnPolygonBoundary(cx, cz, collider.points);
     const inside = pointInPolygon(cx, cz, collider.points);
 
     if (inside) {
-      let dx = bx - collider.centroid.x;
-      let dz = bz - collider.centroid.z;
+      let dx = bx - cx;
+      let dz = bz - cz;
       const len = Math.hypot(dx, dz) || 1;
       dx /= len;
       dz /= len;

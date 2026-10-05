@@ -1,0 +1,12 @@
+// Ephemeral local multiplayer rooms. Client-trusted playtest, not ranked matchmaking.
+const express = require('express');
+const { randomBytes } = require('crypto');
+const storage = require('../storage/localStorage');
+const router = express.Router();
+const rooms = new Map();
+const publicRoom = r => ({ code:r.code,trackId:r.trackId,startAt:r.startAt,players:r.players.map(({token,...p})=>p) });
+function player(body={}){return {id:randomBytes(6).toString('hex'),token:randomBytes(24).toString('hex'),name:String(body.name||'Driver').slice(0,24),color:/^#[0-9a-f]{6}$/i.test(body.color)?body.color:'#75bfe1',ready:false,state:null,finished:null,lastSeen:Date.now()}}
+router.post('/', async(req,res)=>{try{const id=String(req.body.trackId||'');if(!/^custom_\d+$/.test(id))return res.status(400).json({error:'Choose a valid route.'});const track=await storage.readFile('chunks',id+'.json');if(!track)return res.status(400).json({error:'Route not found.'});for(const[code,r]of rooms)if(Date.now()-r.created>3600000)rooms.delete(code);if(rooms.size>=100)return res.status(429).json({error:'Room limit reached.'});const p=player(req.body),r={code:randomBytes(3).toString('hex').toUpperCase(),trackId:id,players:[p],created:Date.now(),startAt:null};rooms.set(r.code,r);res.json({...publicRoom(r),playerId:p.id,token:p.token})}catch(e){res.status(400).json({error:'Could not create room for this route.'})}});
+router.post('/:code/join',(req,res)=>{const r=rooms.get(req.params.code);if(!r)return res.status(404).json({error:'Room not found. Check the code.'});if(r.players.length>=2||r.startAt)return res.status(409).json({error:'This room is full or already racing.'});const p=player(req.body);r.players.push(p);res.json({...publicRoom(r),playerId:p.id,token:p.token})});
+router.post('/:code/sync',(req,res)=>{const r=rooms.get(req.params.code);if(!r)return res.status(404).json({error:'Room expired.'});const p=r.players.find(p=>p.token===req.body.token);if(!p)return res.status(403).json({error:'Invalid room membership.'});p.lastSeen=Date.now();p.ready=!!req.body.ready;if(r.players.length===2&&r.players.every(p=>p.ready)&&!r.startAt)r.startAt=Date.now()+5000;const s=req.body.state;if(s&&['x','z','rot'].every(k=>Number.isFinite(s[k])&&Math.abs(s[k])<100000))p.state={x:s.x,z:s.z,rot:s.rot};if(r.startAt&&Date.now()>=r.startAt&&Number.isFinite(req.body.finished)&&req.body.finished>0&&p.finished===null)p.finished=req.body.finished;res.json({...publicRoom(r),serverNow:Date.now()})});
+module.exports=router;

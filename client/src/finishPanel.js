@@ -13,6 +13,7 @@ export function formatTime(totalSeconds) {
 export function showFinishPanel(container, apiBaseUrl, trackId, recorder, finalTimeSeconds) {
   container.innerHTML = `
     <div id="finish-card">
+      <button id="finish-home" style="float:right;background:none;border:0;color:#d5fc51;cursor:pointer">← City</button>
       <h2>Finished!</h2>
       <p id="finish-time">${formatTime(finalTimeSeconds)}</p>
       <div id="finish-save-row">
@@ -28,6 +29,7 @@ export function showFinishPanel(container, apiBaseUrl, trackId, recorder, finalT
     </div>
   `;
   container.style.display = '';
+  container.querySelector('#finish-home').onclick = () => location.reload();
 
   const input = container.querySelector('#finish-name-input');
   const saveBtn = container.querySelector('#finish-save-btn');

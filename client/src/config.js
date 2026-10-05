@@ -13,7 +13,7 @@ import { Capacitor } from '@capacitor/core';
 
 const STORAGE_KEY = 'apiBaseUrl';
 const BUILD_TIME_URL = import.meta.env.VITE_API_BASE_URL || '';
-const DEFAULT_WEB_URL = 'http://localhost:3001';
+const DEFAULT_WEB_URL = `${window.location.protocol}//${window.location.hostname}:3001`;
 
 export function isNativeApp() {
   return Capacitor.isNativePlatform();

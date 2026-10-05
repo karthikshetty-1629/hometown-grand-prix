@@ -1,9 +1,5 @@
-// Drives the car with simple arcade physics: separate accelerate/brake/steer inputs, free
-// movement anywhere on the map (not locked to any one path), coasts to a stop when no input
-// is held. The whole real road network is drivable now, not one server-computed corridor, so
-// there's no road-edge collision to speak of — buildings are what actually box the car into
-// the street grid, same as they would in reality.
-
+import { constrainToRoad } from './roadBoundary.js';
+import { driveSession } from './routePicker.js';
 import { Color3, Vector3 } from '@babylonjs/core';
 import { createCarMesh } from './carMesh.js';
 import { CameraRig } from './cameraRig.js';
@@ -24,8 +20,9 @@ const CAR_COLLISION_RADIUS_M = 1.0;
 const COLLISION_SPEED_DAMPING = 0.9; // scraping a wall bleeds a bit of speed each frame
 
 export class CarController {
-  constructor(scene, canvas, start, buildings = []) {
+  constructor(scene, canvas, start, buildings = [], streetSpace) {
     this.scene = scene;
+    this.streetSpace = streetSpace;
     this.buildingColliders = buildBuildingColliders(buildings);
 
     const startPoint = start || { x: 0, z: 0, dirX: 0, dirZ: 1 };
@@ -39,7 +36,7 @@ export class CarController {
     this._bindInput();
 
     this.mesh = this._createCarMesh();
-    this.cameraRig = new CameraRig(scene);
+    this.cameraRig = new CameraRig(scene, streetSpace);
     this.camera = this.cameraRig.camera;
   }
 
@@ -55,15 +52,16 @@ export class CarController {
       KeyD: 'right',
     };
     window.addEventListener('keydown', (e) => {
-      if (keyMap[e.code]) this.input[keyMap[e.code]] = true;
+      if (keyMap[e.code]) { e.preventDefault(); this.input[keyMap[e.code]] = true; }
     });
+    window.addEventListener('blur', () => { Object.keys(this.input).forEach(k => this.input[k] = false); });
     window.addEventListener('keyup', (e) => {
       if (keyMap[e.code]) this.input[keyMap[e.code]] = false;
     });
   }
 
   _createCarMesh() {
-    return createCarMesh(this.scene, { name: 'car', bodyColor: new Color3(0.85, 0.12, 0.12) });
+    return createCarMesh(this.scene, { name: 'car', bodyColor: Color3.FromHexString(driveSession.color) });
   }
 
   // Returns { x, z, rot } for the current frame — used by runRecorder.
@@ -99,11 +97,15 @@ export class CarController {
 
     const turnFactor = clamp(Math.abs(this.speed) / MIN_TURN_SPEED_MPS, 0, 1);
     const speedSign = Math.sign(this.speed);
+    const previousHeading = this.heading;
     this.heading += this._steerValue * STEER_RATE_RAD_S * turnFactor * speedSign * deltaSeconds;
 
     // --- Move forward along heading ---
     const forward = new Vector3(Math.sin(this.heading), 0, Math.cos(this.heading));
-    this.position.addInPlace(forward.scale(this.speed * deltaSeconds));
+    const proposed = this.position.add(forward.scale(this.speed * deltaSeconds));
+    const curb = constrainToRoad(this.streetSpace, this.position, proposed, 1.05, this.heading);
+    this.position.x = curb.x; this.position.z = curb.z;
+    if (curb.hit) { this.speed *= Math.exp(-8 * deltaSeconds); this.heading=previousHeading; }
 
     // --- Collision: buildings only now (no single road corridor to constrain to) ---
     const buildingResult = resolveBuildingCollisions(

@@ -1,300 +1,45 @@
-// Pre-game screen: draws the real downloaded street network as a schematic 2D map (no
-// satellite/street imagery — that would require a paid map-tile API; this draws the actual
-// OSM road geometry we already have, which stays free and fully local) and lets the player
-// click a start and a finish point on real streets. Resolves with the generated chunk_id
-// once the player confirms a route.
-
-const ROAD_COLOR = 'rgba(140, 150, 168, 0.55)';
-const START_COLOR = '#2ecc71';
-const END_COLOR = '#ff5c5c';
-const BG_COLOR = '#12141a';
-const PADDING_PX = 40;
-
-export function showRoutePicker(apiBaseUrl, container) {
-  return new Promise((resolve) => {
-    init(apiBaseUrl, container, resolve);
-  });
+import './dashboard.css';
+export const driveSession = { mode: 'race', color: localStorage.getItem('hgp-color') || '#d5fc51', name: localStorage.getItem('hgp-name') || 'Local driver', room: null };
+const carArt = `<svg class="car-art" viewBox="0 0 260 140" aria-label="Sport coupe illustration"><defs><linearGradient id="paint" x2="0" y2="1"><stop stop-color="#e2fb9e"/><stop offset="1" stop-color="#718c38"/></linearGradient></defs><ellipse cx="133" cy="111" rx="104" ry="14" fill="#080c09"/><path d="M23 81 52 65 88 32 160 30 204 64 235 77 235 100 27 104Z" fill="url(#paint)"/><path d="m65 62 29-24 60-1 33 27Z" fill="#243830"/><path d="m122 37 4 26" stroke="#adc57a" stroke-width="5"/><path d="m24 82 210-3M90 69l-1 26M170 69l7 26" stroke="#536732" fill="none"/><path d="m205 77 28 3-2 9-24-1" fill="#f1fbd9"/><circle cx="66" cy="101" r="20" fill="#0a100c"/><circle cx="66" cy="101" r="11" fill="#8b978b"/><circle cx="193" cy="100" r="20" fill="#0a100c"/><circle cx="193" cy="100" r="11" fill="#8b978b"/></svg>`;
+export function dialog(title, body) {
+ const el=document.createElement('div');el.className='dialog-backdrop';el.innerHTML=`<section class="dialog-card" role="dialog" aria-modal="true" aria-label="${title}"><button class="close" aria-label="Close">×</button><div class="eyebrow">Hometown Grand Prix</div><h2>${title}</h2>${body}</section>`;document.body.append(el);el.querySelector('.close').onclick=()=>el.remove();el.addEventListener('click',e=>{if(e.target===el)el.remove()});el.addEventListener('keydown',e=>{if(e.key==='Escape')el.remove()});el.querySelector('input,button')?.focus();return el;
 }
-
-async function init(apiBaseUrl, container, resolve) {
-  container.innerHTML = `
-    <div id="picker-header">
-      <h1>Hometown Grand Prix</h1>
-      <p>Plan a race route through Downtown San Jose's real streets</p>
-    </div>
-
-    <div id="picker-map-frame">
-      <canvas id="picker-canvas"></canvas>
-
-      <div id="picker-loading">
-        <div class="spinner"></div>
-        <span>Loading street map…</span>
-      </div>
-
-      <div id="picker-hud">
-        <ol id="picker-steps">
-          <li data-step="start"><span class="step-num">1</span>Set start</li>
-          <li data-step="end"><span class="step-num">2</span>Set finish</li>
-          <li data-step="generate"><span class="step-num">3</span>Generate route</li>
-        </ol>
-
-        <p id="picker-status">Loading street map…</p>
-
-        <div id="picker-legend">
-          <span><i class="dot" style="background:${START_COLOR}"></i>Start</span>
-          <span><i class="dot" style="background:${END_COLOR}"></i>Finish</span>
-        </div>
-
-        <div id="picker-buttons">
-          <button id="picker-generate" disabled>Generate Route</button>
-          <button id="picker-reset">Reset</button>
-        </div>
-      </div>
-
-      <div id="picker-attribution">
-        Map data &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors, ODbL
-      </div>
-    </div>
-  `;
-
-  const frame = container.querySelector('#picker-map-frame');
-  const canvas = container.querySelector('#picker-canvas');
-  const loadingEl = container.querySelector('#picker-loading');
-  const statusEl = container.querySelector('#picker-status');
-  const generateBtn = container.querySelector('#picker-generate');
-  const resetBtn = container.querySelector('#picker-reset');
-  const stepEls = container.querySelectorAll('#picker-steps li');
-  const ctx = canvas.getContext('2d');
-
-  // Static road network is drawn once onto an offscreen layer; the visible canvas just
-  // blits that layer + redraws the (animated, pulsing) markers every frame. Keeps marker
-  // animation smooth without re-stroking 9000+ road segments every frame.
-  const roadLayer = document.createElement('canvas');
-  const roadCtx = roadLayer.getContext('2d');
-
-  function resizeCanvas() {
-    const rect = frame.getBoundingClientRect();
-    canvas.width = roadLayer.width = rect.width;
-    canvas.height = roadLayer.height = rect.height;
-  }
-  resizeCanvas();
-
-  let nodes = [];
-  let edges = [];
-  let nodesById = new Map();
-  let bounds = null;
-
-  window.addEventListener('resize', () => {
-    resizeCanvas();
-    if (bounds) drawRoadLayer();
-  });
-
-  try {
-    const response = await fetch(`${apiBaseUrl}/api/world/roadnetwork`);
-    ({ nodes, edges } = await response.json());
-  } catch (err) {
-    loadingEl.querySelector('span').textContent = `Could not load the street map: ${err.message}`;
-    loadingEl.classList.add('error');
-    return;
-  }
-
-  nodesById = new Map(nodes.map((n) => [n.id, n]));
-  bounds = computeBounds(nodes);
-  drawRoadLayer();
-  loadingEl.classList.add('hidden');
-
-  const state = { start: null, end: null };
-
-  function project(lat, lon) {
-    const avgLat = (bounds.minLat + bounds.maxLat) / 2;
-    const latCos = Math.cos((avgLat * Math.PI) / 180);
-    const w = canvas.width - PADDING_PX * 2;
-    const h = canvas.height - PADDING_PX * 2;
-    const spanX = (bounds.maxLon - bounds.minLon) * latCos;
-    const spanY = bounds.maxLat - bounds.minLat;
-    const scale = Math.min(w / spanX, h / spanY);
-    const offsetX = (w - spanX * scale) / 2;
-    const offsetY = (h - spanY * scale) / 2;
-    const x = PADDING_PX + offsetX + (lon - bounds.minLon) * latCos * scale;
-    const y = PADDING_PX + offsetY + (bounds.maxLat - lat) * scale; // north up
-    return [x, y];
-  }
-
-  function unproject(px, py) {
-    const avgLat = (bounds.minLat + bounds.maxLat) / 2;
-    const latCos = Math.cos((avgLat * Math.PI) / 180);
-    const w = canvas.width - PADDING_PX * 2;
-    const h = canvas.height - PADDING_PX * 2;
-    const spanX = (bounds.maxLon - bounds.minLon) * latCos;
-    const spanY = bounds.maxLat - bounds.minLat;
-    const scale = Math.min(w / spanX, h / spanY);
-    const offsetX = (w - spanX * scale) / 2;
-    const offsetY = (h - spanY * scale) / 2;
-    const lon = bounds.minLon + (px - PADDING_PX - offsetX) / (latCos * scale);
-    const lat = bounds.maxLat - (py - PADDING_PX - offsetY) / scale;
-    return { lat, lon };
-  }
-
-  function nearestNode(lat, lon) {
-    let best = null;
-    let bestDist = Infinity;
-    for (const n of nodes) {
-      const d = (n.lat - lat) ** 2 + (n.lon - lon) ** 2;
-      if (d < bestDist) {
-        bestDist = d;
-        best = n;
-      }
-    }
-    return best;
-  }
-
-  function drawRoadLayer() {
-    roadCtx.fillStyle = BG_COLOR;
-    roadCtx.fillRect(0, 0, roadLayer.width, roadLayer.height);
-
-    roadCtx.strokeStyle = ROAD_COLOR;
-    roadCtx.lineWidth = 1;
-    roadCtx.beginPath();
-    for (const [aId, bId] of edges) {
-      const a = nodesById.get(aId);
-      const b = nodesById.get(bId);
-      if (!a || !b) continue;
-      const [ax, ay] = project(a.lat, a.lon);
-      const [bx, by] = project(b.lat, b.lon);
-      roadCtx.moveTo(ax, ay);
-      roadCtx.lineTo(bx, by);
-    }
-    roadCtx.stroke();
-  }
-
-  function drawMarker(node, color, pulseT) {
-    if (!node) return;
-    const [x, y] = project(node.lat, node.lon);
-
-    // Soft pulsing ring so a chosen point reads as "live", not just a static dot.
-    const ringRadius = 9 + Math.sin(pulseT) * 4;
-    ctx.beginPath();
-    ctx.arc(x, y, ringRadius, 0, Math.PI * 2);
-    ctx.strokeStyle = color;
-    ctx.globalAlpha = 0.35;
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-
-    ctx.beginPath();
-    ctx.arc(x, y, 7, 0, Math.PI * 2);
-    ctx.fillStyle = color;
-    ctx.fill();
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-  }
-
-  let rafId = null;
-  function animate(timeMs) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(roadLayer, 0, 0);
-    const t = timeMs / 400;
-    drawMarker(state.start, START_COLOR, t);
-    drawMarker(state.end, END_COLOR, t);
-    rafId = requestAnimationFrame(animate);
-  }
-  rafId = requestAnimationFrame(animate);
-  window.addEventListener('beforeunload', () => cancelAnimationFrame(rafId));
-
-  function updateStatus() {
-    if (!state.start) {
-      statusEl.textContent = 'Click anywhere on the map to set your START point.';
-      setActiveStep('start');
-    } else if (!state.end) {
-      statusEl.textContent = 'Now click a point to set your FINISH.';
-      setActiveStep('end');
-    } else {
-      statusEl.textContent = 'Ready — click "Generate Route" to build the track.';
-      setActiveStep('generate');
-    }
-    generateBtn.disabled = !(state.start && state.end);
-  }
-
-  function setActiveStep(stepName) {
-    stepEls.forEach((li) => {
-      const step = li.dataset.step;
-      li.classList.toggle('active', step === stepName);
-      li.classList.toggle(
-        'done',
-        (stepName === 'end' && step === 'start') ||
-          (stepName === 'generate' && (step === 'start' || step === 'end'))
-      );
-    });
-  }
-
-  canvas.addEventListener('click', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    const { lat, lon } = unproject(e.clientX - rect.left, e.clientY - rect.top);
-    const node = nearestNode(lat, lon);
-    if (!node) return;
-
-    if (!state.start) {
-      state.start = node;
-    } else if (!state.end) {
-      if (node.id === state.start.id) return;
-      state.end = node;
-    } else {
-      state.start = node;
-      state.end = null;
-    }
-    updateStatus();
-  });
-
-  resetBtn.addEventListener('click', () => {
-    state.start = null;
-    state.end = null;
-    statusEl.classList.remove('error');
-    updateStatus();
-  });
-
-  generateBtn.addEventListener('click', async () => {
-    generateBtn.disabled = true;
-    generateBtn.classList.add('loading');
-    statusEl.classList.remove('error');
-    statusEl.textContent = 'Generating route…';
-    try {
-      const res = await fetch(`${apiBaseUrl}/api/routes`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startNodeId: state.start.id, endNodeId: state.end.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        statusEl.textContent = `Could not build that route: ${data.error}. Try different points.`;
-        statusEl.classList.add('error');
-        generateBtn.disabled = false;
-        generateBtn.classList.remove('loading');
-        return;
-      }
-      cancelAnimationFrame(rafId);
-      resolve(data.chunk_id);
-    } catch (err) {
-      statusEl.textContent = `Error: ${err.message}`;
-      statusEl.classList.add('error');
-      generateBtn.disabled = false;
-      generateBtn.classList.remove('loading');
-    }
-  });
-
-  updateStatus();
-}
-
-function computeBounds(nodes) {
-  let minLat = Infinity;
-  let maxLat = -Infinity;
-  let minLon = Infinity;
-  let maxLon = -Infinity;
-  for (const n of nodes) {
-    if (n.lat < minLat) minLat = n.lat;
-    if (n.lat > maxLat) maxLat = n.lat;
-    if (n.lon < minLon) minLon = n.lon;
-    if (n.lon > maxLon) maxLon = n.lon;
-  }
-  return { minLat, maxLat, minLon, maxLon };
+export async function api(base,path,body){const r=await fetch(base+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw new Error(d.error||'Server unavailable');return d;}
+export function showRoutePicker(base,container){return new Promise((resolve,reject)=>init(base,container,resolve).catch(reject));}
+async function init(base,c,resolve){
+ document.getElementById('city-loading').hidden=true;
+ c.innerHTML=`<header class="topbar"><div class="brand"><span class="brand-mark">H/G</span><div>HOMETOWN<small>GRAND PRIX</small></div></div><nav class="topnav" aria-label="Main navigation"><button class="selected" id="explore-nav">Explore</button><button id="garage-nav">Garage</button><button id="friends-nav">Play with friends</button></nav><button class="profile-button" id="profile"><span class="avatar">↗</span><span id="driver-label"></span></button></header>
+ <main class="dashboard"><section class="intro"><div><div class="eyebrow">Your streets. Your starting line.</div><h1>The city is yours.</h1><p>Real streets. Open roads. A different way home.</p></div><div class="online-badge"><i></i> Local playtest <span style="color:#60715d"> / </span> San Jose</div></section>
+ <div class="layout"><section class="map-card"><div class="map-toolbar"><div><h2>San Jose, California <span style="color:#788775">⌄</span></h2><small>Downtown & SJSU · United States</small></div><button class="text-button" id="change-city">Change city ↗</button></div><div class="map-wrap"><canvas id="city-map" aria-label="San Jose street map. Click to choose start and finish."></canvas><div class="map-caption" id="map-caption">↗ &nbsp; Choose two points. Make it your race.</div><div class="compass">N<br>↑</div><div class="map-credit">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors</div></div><div class="map-foot"><span><span class="legend-dot"></span> Start <span class="legend-dot" style="background:#f3f7e9"></span> Finish <span class="legend-dot" style="background:#63854e"></span> Suggested route</span><span><strong id="route-distance">—</strong> <span id="map-meta">Loading streets</span></span></div></section>
+ <aside class="side-card"><h2>Make your next move</h2><div class="subtle">A quick escape or a little competition?</div><div class="mode-switch"><button id="mode-drive">Free drive</button><button id="mode-race" class="active">Race route</button></div><label class="field-label">YOUR ROUTE</label><div class="point"><i></i><span id="start-label">Choose a starting point</span></div><div class="route-connector"></div><div class="point finish"><i></i><span id="end-label">Choose your destination</span></div><div class="route-actions"><button class="text-button" id="preset">Try Downtown → SJSU</button><button class="text-button" id="reset">Reset</button></div><div class="rule-list"><div class="field-label">THE CITY PLAYS BY ITS RULES</div><div class="rule-row"><span>◈ &nbsp; Police pursuit</span><span>ACTIVE</span></div><div class="rule-row"><span>✚ &nbsp; Emergency response</span><span>ACTIVE</span></div><div class="rule-row"><span>◷ &nbsp; Traffic penalties</span><span>+ TIME</span></div></div><button class="primary" id="launch" disabled><span>Start race</span><span>↗</span></button><p class="route-status" id="route-status" aria-live="polite">Loading your neighborhood…</p><div class="subtle" style="font-size:9px">Mapped streets · simulated city life</div></aside></div>
+ <div class="bottom-grid"><section class="feature-card garage-card"><div class="eyebrow">01 / Your garage</div><h3>Concept GT</h3><p>Detailed body. Real materials.<br>Ready for your neighborhood.</p><button class="text-button" id="garage-open">Customize ride ↗</button>${carArt}</section><section class="feature-card"><div class="eyebrow">02 / Better together</div><h3>Same streets. Real rivalry.</h3><p>Pick the finish line. Share a room.<br>See who takes the smarter route.</p><button class="text-button" id="room-open">Challenge a friend ↗</button></section><section class="feature-card"><div class="eyebrow">03 / Drive with intention</div><h3>Fast isn’t always first.</h3><p>Keep it clean. Violations add time.<br>Lose the pursuit before you finish.</p><button class="text-button" id="rules-open">Know the rules ↗</button></section></div><footer class="dashboard-footer"><span>BUILT AROUND THE PLACES YOU KNOW.</span><span>LOCAL PROTOTYPE &nbsp; / &nbsp; <a href="/credits.html" target="_blank" rel="noopener" style="color:inherit">Map & model credits ↗</a></span></footer></main>`;
+ const q=s=>c.querySelector(s),canvas=q('#city-map'),ctx=canvas.getContext('2d'),status=q('#route-status');
+ q('#driver-label').textContent=driveSession.name;
+ q('#profile').onclick=()=>{const d=dialog('Your driver profile',`<p class="subtle">Saved on this device. Online account sign-in is not connected yet.</p><label class="field-label" for="profile-name">DRIVER NAME</label><input id="profile-name" maxlength="24" placeholder="Choose a driver name"><button class="primary" id="save-profile">Save profile →</button>`);d.querySelector('input').value=driveSession.name;d.querySelector('#save-profile').onclick=()=>{driveSession.name=d.querySelector('input').value.trim()||'Local driver';localStorage.setItem('hgp-name',driveSession.name);q('#driver-label').textContent=driveSession.name;d.remove()}};
+ const garage=()=>{const d=dialog('Make it yours.',`<p class="subtle">Concept GT · 49 mph top speed · detailed glTF body</p><div style="height:145px;position:relative">${carArt}</div><label class="field-label">BODY PAINT</label><div class="swatches"></div><p class="subtle">Your paint follows you into the city and friend races.</p>`);for(const color of ['#d5fc51','#e56d50','#75bfe1','#ede8d9','#6e71c9']){const b=document.createElement('button');b.style.background=color;b.setAttribute('aria-label',`Paint ${color}`);b.classList.toggle('active',color===driveSession.color);b.onclick=()=>{driveSession.color=color;localStorage.setItem('hgp-color',color);d.querySelectorAll('.swatches button').forEach(x=>x.classList.toggle('active',x===b))};d.querySelector('.swatches').append(b)}};
+ q('#garage-open').onclick=q('#garage-nav').onclick=garage;
+ q('#explore-nav').onclick=()=>q('#city-map').scrollIntoView({behavior:'smooth',block:'center'});
+ q('#change-city').onclick=()=>dialog('Start with San Jose.',`<p class="subtle">Downtown San Jose is installed and playable, including the streets around SJSU.</p><div class="room-row">San Jose, California <span class="tag" style="float:right">INSTALLED</span></div><p class="subtle">More neighborhoods need imported road, building, and traffic-rule data. Worldwide map downloads are not available in this local build.</p>`);
+ q('#rules-open').onclick=()=>dialog('Own the road. Know the rules.',`<p class="subtle">Stay above the estimated speed limit for 3 seconds and a patrol pursues you. Stop for 3 seconds to pull over (+10 seconds), or create distance and drive clean for 10 seconds to escape.</p><p class="subtle">Building impacts add 5 seconds. Pedestrian collisions add 20 seconds and dispatch an ambulance. Emergency vehicles and pedestrians are simplified simulations.</p><p class="subtle">A race finishes only when you reach your destination without an active pursuit. Lowest elapsed time plus penalties wins. Friend races are local, client-trusted prototypes, not ranked competition.</p>`);
+ let net;try{net=await api(base,'/api/world/roadnetwork')}catch(e){status.textContent='Could not load San Jose. Check that the API server is running, then reload.';status.classList.add('error');throw e}
+ const nodes=net.nodes,byId=new Map(nodes.map(n=>[n.id,n])),adj=new Map();for(const [a,b]of net.edges){if(!adj.has(a))adj.set(a,[]);if(!adj.has(b))adj.set(b,[]);adj.get(a).push(b);adj.get(b).push(a)}
+ const minLat=Math.min(...nodes.map(n=>n.lat)),maxLat=Math.max(...nodes.map(n=>n.lat)),minLon=Math.min(...nodes.map(n=>n.lon)),maxLon=Math.max(...nodes.map(n=>n.lon));
+ let start=null,end=null,path=[],busy=false;
+ function nearest(lat,lon){return nodes.reduce((best,n)=>(n.lat-lat)**2+(n.lon-lon)**2<(best.lat-lat)**2+(best.lon-lon)**2?n:best)}
+ function project(n){const w=canvas.clientWidth,h=canvas.clientHeight,cos=Math.cos(minLat*Math.PI/180),scale=Math.min((w-60)/((maxLon-minLon)*cos),(h-50)/(maxLat-minLat));return [w/2+(n.lon-(minLon+maxLon)/2)*cos*scale,h/2-(n.lat-(minLat+maxLat)/2)*scale]}
+ function route(){path=[];if(!start||!end)return;const seen=new Map([[start.id,null]]),queue=[start.id];for(let i=0;i<queue.length;i++){const a=queue[i];if(a===end.id)break;for(const b of adj.get(a)||[])if(!seen.has(b)){seen.set(b,a);queue.push(b)}}if(!seen.has(end.id))return;for(let n=end.id;n!==null;n=seen.get(n))path.unshift(byId.get(n))}
+ function draw(){const w=canvas.clientWidth,h=canvas.clientHeight;canvas.width=w*devicePixelRatio;canvas.height=h*devicePixelRatio;ctx.scale(devicePixelRatio,devicePixelRatio);ctx.fillStyle='#151e19';ctx.fillRect(0,0,w,h);ctx.strokeStyle='#202c24';ctx.lineWidth=1;for(let x=0;x<w;x+=32){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke()}for(let y=0;y<h;y+=32){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke()}
+ ctx.lineWidth=2;ctx.strokeStyle='#39473a';ctx.beginPath();for(const[a,b]of net.edges){const p=project(byId.get(a)),v=project(byId.get(b));ctx.moveTo(...p);ctx.lineTo(...v)}ctx.stroke();
+ if(path.length){ctx.strokeStyle='#d5fc51';ctx.lineWidth=3;ctx.shadowColor='#d5fc51';ctx.shadowBlur=9;ctx.beginPath();path.forEach((n,i)=>{const p=project(n);i?ctx.lineTo(...p):ctx.moveTo(...p)});ctx.stroke();ctx.shadowBlur=0}
+ ctx.font='600 10px "DM Sans",sans-serif';ctx.fillStyle='#8a9a82';for(const[txt,lat,lon]of [['DOWNTOWN',37.335,-121.893],['SAN JOSE STATE',37.3352,-121.881],['SOFA DISTRICT',37.328,-121.887]]){const p=project({lat,lon});if(p[0]>0&&p[0]<w&&p[1]>20&&p[1]<h)ctx.fillText(txt,...p)}
+ for(const[n,label,color]of [[start,'A','#d5fc51'],[end,'B','#edf5e1']])if(n){const[x,y]=project(n);ctx.fillStyle=color+'22';ctx.beginPath();ctx.arc(x,y,20,0,Math.PI*2);ctx.fill();ctx.fillStyle=color;ctx.beginPath();ctx.arc(x,y,10,0,Math.PI*2);ctx.fill();ctx.fillStyle='#162013';ctx.font='bold 11px sans-serif';ctx.textAlign='center';ctx.fillText(label,x,y+4);ctx.textAlign='left'}
+ }
+ function update(){route();draw();q('#start-label').textContent=start?`${start.lat.toFixed(4)}, ${start.lon.toFixed(4)}`:'Choose a starting point';q('#end-label').textContent=end?`${end.lat.toFixed(4)}, ${end.lon.toFixed(4)}`:driveSession.mode==='drive'?'Open exploration · no finish':'Choose your destination';q('#launch').disabled=busy||!start||(driveSession.mode==='race'&&(!end||!path.length));q('#launch span').textContent=driveSession.mode==='drive'?'Enter free drive':'Start race';q('#route-distance').textContent=path.length?`${(path.reduce((s,n,i)=>i?s+Math.hypot((n.lat-path[i-1].lat)*111320,(n.lon-path[i-1].lon)*88000):0,0)/1000).toFixed(1)} km`:'—';status.textContent=!start?'Tap a street to set your start, or try the SJSU route.':driveSession.mode==='drive'?'You’re ready. Explore the city at your own pace.':!end?'Choose a finish on the map.':'Route ready. Your city is waiting.';q('#map-caption').textContent=!start?'↗  Choose your starting point':!end&&driveSession.mode==='race'?'⚑  Now choose your finish line':'↗  Your streets. Your route.'}
+ new ResizeObserver(draw).observe(canvas.parentElement);q('#map-meta').textContent='· real street network';
+ canvas.onclick=e=>{const r=canvas.getBoundingClientRect();const point=nodes.reduce((best,n)=>{const p=project(n),b=project(best);return Math.hypot(p[0]-e.clientX+r.left,p[1]-e.clientY+r.top)<Math.hypot(b[0]-e.clientX+r.left,b[1]-e.clientY+r.top)?n:best});if(!start||end||driveSession.mode==='drive'){start=point;end=null}else if(point.id!==start.id)end=point;update()};
+ q('#preset').onclick=()=>{start=nearest(37.3337,-121.8907);end=nearest(37.3347,-121.8815);update()};q('#reset').onclick=()=>{start=end=null;update()};for(const mode of ['drive','race'])q('#mode-'+mode).onclick=()=>{driveSession.mode=mode;q('#mode-drive').classList.toggle('active',mode==='drive');q('#mode-race').classList.toggle('active',mode==='race');update()};
+ async function createRoute(){if(!start)throw new Error('Choose a start on the map first.');driveSession.hasDestination=!!end;let finish=end;if(!finish){const reachable=[start.id],seen=new Set(reachable);for(let i=0;i<reachable.length&&reachable.length<60;i++)for(const n of adj.get(reachable[i])||[])if(!seen.has(n)){seen.add(n);reachable.push(n)}finish=byId.get(reachable[reachable.length-1]);if(!finish)throw new Error('Choose a different starting street.')}return api(base,'/api/routes',{startNodeId:start.id,endNodeId:finish.id})}
+ q('#launch').onclick=async()=>{busy=true;update();status.textContent='Preparing the city…';try{const d=await createRoute();resolve(d.chunk_id)}catch(e){busy=false;update();status.textContent=e.message;status.classList.add('error')}};
+ const rooms=()=>{const d=dialog('Meet at the starting line.',`<p class="subtle">Choose a route before hosting. Share the room code with a friend using this same server. Two drivers per race.</p><button class="primary" id="host-room">Create race room ↗</button><label class="field-label" for="join-code">OR JOIN A FRIEND</label><input id="join-code" maxlength="6" placeholder="6-character room code"><button class="primary" id="join-room">Join room →</button><p class="subtle" id="room-status" aria-live="polite"></p>`);const msg=d.querySelector('#room-status');const enter=async(host)=>{try{msg.textContent='Connecting…';let data;if(host){if(!end)throw new Error('Choose a start and finish before creating a room.');const track=await createRoute();data=await api(base,'/api/rooms',{trackId:track.chunk_id,name:driveSession.name,color:driveSession.color})}else data=await api(base,`/api/rooms/${encodeURIComponent(d.querySelector('input').value.trim().toUpperCase())}/join`,{name:driveSession.name,color:driveSession.color});driveSession.room=data;driveSession.mode='race';d.remove();resolve(data.trackId)}catch(e){msg.textContent=e.message}};d.querySelector('#host-room').onclick=()=>enter(true);d.querySelector('#join-room').onclick=()=>enter(false)};
+ q('#room-open').onclick=q('#friends-nav').onclick=rooms;update();
 }

@@ -13,7 +13,7 @@
 // for the same reason — merge needs shared materials to collapse into few draw calls, and
 // 4,000+ material instances was wasteful regardless.
 
-import { MeshBuilder, StandardMaterial, Color3, Vector3 } from '@babylonjs/core';
+import { MeshBuilder, StandardMaterial, Color3, Vector3, DynamicTexture, Mesh } from '@babylonjs/core';
 import earcut from 'earcut';
 
 const CATEGORY_COLORS = {
@@ -38,7 +38,7 @@ function getSharedMaterial(scene, key, build) {
   return material;
 }
 
-export function buildCategorizedBuilding(scene, building) {
+export function buildCategorizedBuilding(scene, building, detail = false) {
   const category = CATEGORY_COLORS[building.category] ? building.category : 'generic';
   const color = CATEGORY_COLORS[category];
   const meshes = [];
@@ -58,11 +58,34 @@ export function buildCategorizedBuilding(scene, building) {
     return mat;
   });
   meshes.push(body);
+  if (detail && building.height_m > 3) {
+    const facadeMat = getSharedMaterial(scene, 'facadeWindows', mat => {
+      const texture = new DynamicTexture('windowPattern', { width: 256, height: 256 }, scene, false);
+      const ctx = texture.getContext();
+      ctx.clearRect(0, 0, 256, 256);
+      for (let y=12; y<256; y+=64) for(let x=16; x<256; x+=64) {
+        ctx.fillStyle='#9caea9';ctx.fillRect(x-2,y-2,36,44);
+        ctx.fillStyle='#304751';ctx.fillRect(x,y,32,40);
+        ctx.fillStyle='#718d94';ctx.fillRect(x+2,y+2,13,17);
+      }
+      texture.hasAlpha=true;texture.update();mat.diffuseTexture=texture;
+      mat.useAlphaFromDiffuseTexture=true;mat.backFaceCulling=false;
+      return mat;
+    });
+    for(let i=0;i<footprint.length;i++) {
+      const a=footprint[i],b=footprint[(i+1)%footprint.length];
+      const dx=b.x-a.x,dz=b.z-a.z,len=Math.hypot(dx,dz);
+      if(len<2)continue;
+      const wall=MeshBuilder.CreatePlane('facade',{width:len,height:building.height_m,sideOrientation:Mesh.DOUBLESIDE},scene);
+      wall.position.set((a.x+b.x)/2+dz/len*.03,building.height_m/2,(a.z+b.z)/2-dx/len*.03);
+      wall.rotation.y=-Math.atan2(dz,dx);wall.material=facadeMat;meshes.push(wall);
+    }
+  }
 
   const centroid = centroidOf(building.footprint);
   const radius = footprintSizeOf(building.footprint);
   const decorate = DECORATORS[category] || DECORATORS.generic;
-  decorate(scene, meshes, { centroid, radius, height: building.height_m });
+  // No invented columns, spires, or roof slabs: preserve the sourced footprint.
 
   return meshes;
 }
